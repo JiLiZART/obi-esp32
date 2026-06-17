@@ -15,7 +15,8 @@
  * - Battery Pin 6: Enable (must be HIGH during communication)
  *
  * MODES:
- * - Build with -DENABLE_WEB_SERVER=1 for standalone web interface
+ * - Build with -DENABLE_WEB_SERVER=1 for web interface (joins existing WiFi)
+ * - Add -DENABLE_WIFI_POINT=1 to broadcast own AP (http://4.4.4.4 / obi.local)
  * - Default build provides serial bridge compatible with Python GUI
  *
  * PROTOCOL (Serial Bridge):
@@ -34,6 +35,10 @@
 #include <ArduinoJson.h>
 #include <ArduinoOTA.h>
 #include "web_interface.h"
+#ifdef ENABLE_WIFI_POINT
+#include <ESPmDNS.h>
+#include <DNSServer.h>
+#endif
 #if __has_include("secrets.h")
 #include "secrets.h"
 #endif
@@ -62,6 +67,15 @@
 #define WIFI_PASS "YourPassword"
 #endif
 
+// Access Point credentials (for WiFi point mode)
+#ifndef AP_SSID
+#define AP_SSID "OBI-ESP32"
+#endif
+
+#ifndef AP_PASS
+#define AP_PASS "obi12345"
+#endif
+
 // Nibble swap helper
 #define SWAP_NIBBLES(x) (((x) & 0x0F) << 4 | ((x) & 0xF0) >> 4)
 
@@ -70,6 +84,11 @@ OneWire<ONEWIRE_PIN> makita;
 
 #ifdef ENABLE_WEB_SERVER
 WebServer server(80);
+#endif
+
+#ifdef ENABLE_WIFI_POINT
+DNSServer dnsServer;
+const byte DNS_PORT = 53;
 #endif
 
 // Battery data structure
@@ -133,7 +152,40 @@ void setup() {
     Serial.printf("Enable Pin: GPIO%d\n", ENABLE_PIN);
 
 #ifdef ENABLE_WEB_SERVER
-    Serial.println("Mode: Web Server + Serial Bridge");
+#ifdef ENABLE_WIFI_POINT
+    // Access Point mode - ESP32 broadcasts its own WiFi network
+    Serial.println("Mode: WiFi Access Point + Web Server + Serial Bridge");
+
+    IPAddress apIP(4, 4, 4, 4);
+    IPAddress apSubnet(255, 255, 255, 0);
+
+    WiFi.mode(WIFI_AP);
+    WiFi.softAPConfig(apIP, apIP, apSubnet);
+
+    if (WiFi.softAP(AP_SSID, AP_PASS)) {
+        Serial.printf("Access Point started: SSID '%s'\n", AP_SSID);
+        Serial.print("AP IP: ");
+        Serial.println(WiFi.softAPIP());
+
+        if (MDNS.begin("obi")) {
+            MDNS.addService("http", "tcp", 80);
+            Serial.println("Reachable at http://4.4.4.4 and http://obi.local");
+        }
+
+        // Captive portal: resolve every hostname to the AP so the OS
+        // auto-opens the page the moment a device joins the network.
+        dnsServer.setErrorReplyCode(DNSReplyCode::NoError);
+        dnsServer.start(DNS_PORT, "*", apIP);
+        Serial.println("Captive portal active - page opens automatically on connect");
+
+        setupOTA();
+        setupWebServer();
+    } else {
+        Serial.println("Access Point failed to start - Serial bridge only");
+    }
+#else
+    // Station mode - ESP32 joins an existing WiFi network
+    Serial.println("Mode: Web Server (Station) + Serial Bridge");
     Serial.println("Connecting to WiFi...");
 
     WiFi.begin(WIFI_SSID, WIFI_PASS);
@@ -155,6 +207,7 @@ void setup() {
         Serial.println();
         Serial.println("WiFi failed - Serial bridge only");
     }
+#endif
 #else
     Serial.println("Mode: Serial Bridge Only");
 #endif
@@ -166,6 +219,9 @@ void setup() {
 // Main Loop
 // ------------------------------------------------------------------
 void loop() {
+#ifdef ENABLE_WIFI_POINT
+    dnsServer.processNextRequest();
+#endif
 #ifdef ENABLE_WEB_SERVER
     ArduinoOTA.handle();
     server.handleClient();
@@ -645,12 +701,32 @@ void handleApiReset() {
     server.send(200, "application/json", "{\"success\":true}");
 }
 
+#ifdef ENABLE_WIFI_POINT
+void handleCaptivePortal() {
+    // Any unknown request is an OS connectivity probe (Apple/Android/Windows).
+    // Redirecting it to the portal makes the captive popup appear and load the UI.
+    server.sendHeader("Location", "http://4.4.4.4/", true);
+    server.send(302, "text/plain", "");
+}
+#endif
+
 void setupWebServer() {
     server.on("/", HTTP_GET, handleRoot);
     server.on("/api/read", HTTP_GET, handleApiRead);
     server.on("/api/voltages", HTTP_GET, handleApiVoltages);
     server.on("/api/leds", HTTP_GET, handleApiLeds);
     server.on("/api/reset", HTTP_GET, handleApiReset);
+
+#ifdef ENABLE_WIFI_POINT
+    // Apple's probe expects the literal "Success" page; anything else triggers
+    // the captive popup. Send a redirect for it and every other unknown path.
+    server.on("/hotspot-detect.html", HTTP_GET, handleCaptivePortal);
+    server.on("/generate_204", HTTP_GET, handleCaptivePortal);
+    server.on("/gen_204", HTTP_GET, handleCaptivePortal);
+    server.on("/ncsi.txt", HTTP_GET, handleCaptivePortal);
+    server.on("/connecttest.txt", HTTP_GET, handleCaptivePortal);
+    server.onNotFound(handleCaptivePortal);
+#endif
 
     server.begin();
     Serial.println("Web server started on port 80");
