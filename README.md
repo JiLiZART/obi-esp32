@@ -11,6 +11,7 @@ This firmware provides a web-based interface for reading Makita LXT battery info
 - **Web Interface**: Responsive single-page application accessible from any browser
 - **Real-time Battery Data**: Cell voltages, pack voltage, temperatures, charge count
 - **mDNS Discovery**: Access via `http://obi-esp32.local`
+- **Access Point Mode**: Optional self-hosted WiFi with captive portal (no router needed) — `http://4.4.4.4` / `http://obi.local`
 - **OTA Updates**: Wireless firmware updates after initial flash
 - **REST API**: JSON endpoints for integration with other systems
 - **Dual Temperature Sensors**: Cell thermistor and MOSFET temperatures
@@ -106,8 +107,14 @@ cp src/secrets.h.example src/secrets.h
 Then edit `src/secrets.h` with your WiFi credentials:
 
 ```cpp
+// Station mode: the network the ESP32 joins
 #define WIFI_SSID "YourSSID"
 #define WIFI_PASS "YourPassword"
+
+// Access Point mode: the network the ESP32 broadcasts
+// AP_PASS must be at least 8 characters (WPA2 requirement)
+#define AP_SSID "OBI-ESP32"
+#define AP_PASS "obi12345"
 ```
 
 The `secrets.h` file is gitignored, so your credentials won't be committed to version control.
@@ -140,6 +147,49 @@ sudo firewall-cmd --runtime-to-permanent
 ```
 
 ## Usage
+
+### Access Point Mode (No Router Needed)
+
+By default (`esp32c3_web`) the ESP32 **joins** your existing WiFi. The `esp32c3_ap`
+environment instead makes the ESP32 **broadcast its own** WiFi network, so you can
+use it anywhere with no router — handy in the field.
+
+When you connect to the AP, a **captive portal** opens the interface automatically
+(same popup as airport/hotel WiFi). If it doesn't appear, browse to
+`http://4.4.4.4` or `http://obi.local` manually.
+
+The AP credentials come from `AP_SSID` / `AP_PASS` in `src/secrets.h` (default
+SSID `OBI-ESP32`, password `obi12345`).
+
+```bash
+# Build and flash AP firmware via USB
+pio run -e esp32c3_ap -t upload
+
+# Monitor serial output (shows AP IP and captive portal status)
+pio device monitor
+```
+
+Then on your phone or laptop:
+
+1. Join the WiFi network `OBI-ESP32` (password `obi12345`)
+2. The battery interface opens automatically via the captive portal
+3. Or open `http://4.4.4.4` / `http://obi.local`
+
+#### OTA Updates (AP Mode)
+
+Once the AP firmware is running, update it wirelessly while connected to the
+`OBI-ESP32` network:
+
+```bash
+# Upload via OTA over the Access Point
+pio run -e esp32c3_ap_ota -t upload
+```
+
+The OTA target IP is fixed to `4.4.4.4` in `platformio.ini`.
+
+> **Note:** Captive-portal popups run in a restricted mini-browser. For full
+> functionality (and to stop the OS from dropping the AP as "no internet"),
+> choose "use network as-is" / open a normal browser to `http://4.4.4.4`.
 
 ### Finding the Device
 
